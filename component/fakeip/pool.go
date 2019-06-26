@@ -2,6 +2,7 @@ package fakeip
 
 import (
 	"errors"
+	"math/rand"
 	"net"
 	"sync"
 )
@@ -10,7 +11,7 @@ import (
 type Pool struct {
 	max    uint32
 	min    uint32
-	offset uint32
+	offset int
 	mux    *sync.Mutex
 }
 
@@ -18,8 +19,8 @@ type Pool struct {
 func (p *Pool) Get() net.IP {
 	p.mux.Lock()
 	defer p.mux.Unlock()
-	ip := uintToIP(p.min + p.offset)
-	p.offset = (p.offset + 1) % (p.max - p.min)
+	offset := rand.Intn(p.offset)
+	ip := uintToIP(p.min + uint32(offset))
 	return ip
 }
 
@@ -48,8 +49,9 @@ func New(ipnet *net.IPNet) (*Pool, error) {
 
 	max := min + uint32(total)
 	return &Pool{
-		min: min,
-		max: max,
-		mux: &sync.Mutex{},
+		min:    min,
+		max:    max,
+		offset: total,
+		mux:    &sync.Mutex{},
 	}, nil
 }

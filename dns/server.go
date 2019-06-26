@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/Dreamacro/clash/log"
 	"github.com/miekg/dns"
@@ -55,16 +56,31 @@ func (s *Server) handleFakeIP(r *D.Msg) (msg *D.Msg, err error) {
 		return
 	}
 
+	var ip net.IP
 	q := r.Question[0]
 
-	cache := s.r.cache.Get("fakeip:" + q.String())
+	cache, expireTime := s.r.cache.GetWithExpire("fakeip:" + q.String())
 	if cache != nil {
-		msg = cache.(*D.Msg).Copy()
-		setMsgTTL(msg, 1)
-		return
+		msg = new(D.Msg)
+		if err = msg.Unpack(cache.([]byte)); err != nil {
+			return
+		}
+		if time.Until(expireTime) > 0 {
+			setMsgTTL(msg, 1)
+			return
+		}
+
+		ip = s.r.msgToIP(msg)[0]
+	} else {
+		for {
+			ip = s.r.pool.Get()
+
+			if !s.r.cache.Exist(ip.String()) {
+				break
+			}
+		}
 	}
 
-	var ip net.IP
 	defer func() {
 		if msg == nil {
 			return
@@ -78,7 +94,6 @@ func (s *Server) handleFakeIP(r *D.Msg) (msg *D.Msg, err error) {
 
 	rr := &D.A{}
 	rr.Hdr = dns.RR_Header{Name: r.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: dnsDefaultTTL}
-	ip = s.r.pool.Get()
 	rr.A = ip
 	msg = r.Copy()
 	msg.Answer = []D.RR{rr}

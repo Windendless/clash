@@ -3,6 +3,7 @@ package dns
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/Dreamacro/clash/common/cache"
@@ -91,7 +92,11 @@ func putMsgToCache(c *cache.Cache, key string, msg *D.Msg) {
 		return
 	}
 
-	c.Put(key, msg.Copy(), ttl)
+	out, err := msg.Pack()
+	if err != nil {
+		return
+	}
+	c.Put(key, fmt.Sprintf("%x", out), ttl)
 }
 
 func setMsgTTL(msg *D.Msg, ttl uint32) {

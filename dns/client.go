@@ -27,13 +27,14 @@ var (
 )
 
 type Resolver struct {
-	ipv6     bool
-	mapping  bool
-	fakeip   bool
-	pool     *fakeip.Pool
-	fallback []*nameserver
-	main     []*nameserver
-	cache    *cache.Cache
+	ipv6      bool
+	mapping   bool
+	fakeip    bool
+	pool      *fakeip.Pool
+	fallback  []*nameserver
+	main      []*nameserver
+	cache     *cache.Cache
+	resolving *sync.Mutex
 }
 
 type result struct {
@@ -56,8 +57,17 @@ func (r *Resolver) Exchange(m *D.Msg) (msg *D.Msg, err error) {
 	q := m.Question[0]
 	cache, expireTime := r.cache.GetWithExpire(q.String())
 	if cache != nil {
-		msg = cache.(*D.Msg).Copy()
-		setMsgTTL(msg, uint32(expireTime.Sub(time.Now()).Seconds()))
+		msg = new(D.Msg)
+		if err = msg.Unpack(cache.([]byte)); err != nil {
+			return
+		}
+		if time.Since(expireTime) >= 0 {
+			setMsgTTL(msg, uint32(0))
+
+			go r.ResolveAsync(m)
+		} else {
+			setMsgTTL(msg, uint32(expireTime.Sub(time.Now()).Seconds()))
+		}
 		return
 	}
 	defer func() {
@@ -189,12 +199,47 @@ func (r *Resolver) msgToIP(msg *D.Msg) []net.IP {
 	return ips
 }
 
+func (r *Resolver) ResolveAsync(m *D.Msg) (msg *D.Msg) {
+	r.resolving.Lock()
+
+	q := m.Question[0]
+	defer func() {
+		r.resolving.Unlock()
+
+		if msg == nil {
+			return
+		}
+
+		putMsgToCache(r.cache, q.String(), msg)
+		if r.mapping {
+			ips := r.msgToIP(msg)
+			for _, ip := range ips {
+				putMsgToCache(r.cache, ip.String(), msg)
+			}
+		}
+	}()
+
+	isIPReq := isIPRequest(q)
+	if isIPReq {
+		msg, _ = r.resolveIP(m)
+		return
+	}
+
+	msg, _ = r.exchange(r.main, m)
+	return
+}
+
 func (r *Resolver) IPToHost(ip net.IP) (string, bool) {
 	cache := r.cache.Get(ip.String())
 	if cache == nil {
 		return "", false
 	}
-	fqdn := cache.(*D.Msg).Question[0].Name
+	m := new(D.Msg)
+	if err := m.Unpack(cache.([]byte)); err != nil {
+		return "", false
+	}
+
+	fqdn := m.Question[0].Name
 	return strings.TrimRight(fqdn, "."), true
 }
 
@@ -257,15 +302,17 @@ func New(config Config) *Resolver {
 	})
 
 	r := &Resolver{
-		main:    transform(config.Main),
-		ipv6:    config.IPv6,
-		cache:   cache.New(time.Second * 60),
-		mapping: config.EnhancedMode == MAPPING,
-		fakeip:  config.EnhancedMode == FAKEIP,
-		pool:    config.Pool,
+		main:      transform(config.Main),
+		ipv6:      config.IPv6,
+		cache:     cache.New(time.Second * 60),
+		mapping:   config.EnhancedMode == MAPPING,
+		fakeip:    config.EnhancedMode == FAKEIP,
+		pool:      config.Pool,
+		resolving: &sync.Mutex{},
 	}
 	if config.Fallback != nil {
 		r.fallback = transform(config.Fallback)
 	}
+	r.cache.Reload()
 	return r
 }

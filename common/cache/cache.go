@@ -1,7 +1,14 @@
 package cache
 
 import (
+	"encoding/gob"
+	"encoding/hex"
+	"github.com/Dreamacro/clash/constant"
+	"os"
+	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -14,6 +21,7 @@ type Cache struct {
 type cache struct {
 	mapping sync.Map
 	janitor *janitor
+	count   uint32
 }
 
 type element struct {
@@ -27,6 +35,12 @@ func (c *cache) Put(key interface{}, payload interface{}, ttl time.Duration) {
 		Payload: payload,
 		Expired: time.Now().Add(ttl),
 	})
+	c.count++
+}
+
+func (c *cache) Exist(key interface{}) bool {
+	_, exist := c.mapping.Load(key)
+	return exist
 }
 
 // Get element in Cache, and drop when it expired
@@ -36,12 +50,12 @@ func (c *cache) Get(key interface{}) interface{} {
 		return nil
 	}
 	elm := item.(*element)
-	// expired
-	if time.Since(elm.Expired) > 0 {
+	payload, err := hex.DecodeString(elm.Payload.(string))
+	if err != nil {
 		c.mapping.Delete(key)
 		return nil
 	}
-	return elm.Payload
+	return payload
 }
 
 // GetWithExpire element in Cache with Expire Time
@@ -51,23 +65,89 @@ func (c *cache) GetWithExpire(key interface{}) (payload interface{}, expired tim
 		return
 	}
 	elm := item.(*element)
-	// expired
-	if time.Since(elm.Expired) > 0 {
+	payload, err := hex.DecodeString(elm.Payload.(string))
+	if err != nil {
 		c.mapping.Delete(key)
 		return
 	}
-	return elm.Payload, elm.Expired
+	return payload, elm.Expired
 }
 
 func (c *cache) cleanup() {
 	c.mapping.Range(func(k, v interface{}) bool {
 		key := k.(string)
 		elm := v.(*element)
-		if time.Since(elm.Expired) > 0 {
+		if time.Since(elm.Expired).Hours() > 72 {
 			c.mapping.Delete(key)
 		}
 		return true
 	})
+
+	_ = c.Save()
+}
+
+func (c *cache) Save() error {
+	if c.count == 0 {
+		return nil
+	}
+	f, err := os.Create(filepath.Join(constant.Path.HomeDir(), "dnscache"))
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	enc := gob.NewEncoder(f)
+	res := make(map[string]string)
+
+	c.mapping.Range(func(k, v interface{}) bool {
+		key := k.(string)
+		elm := v.(*element)
+		expireTime := elm.Expired.Unix()
+
+		res[key] = elm.Payload.(string) + "," + strconv.FormatInt(expireTime, 10)
+		return true
+	})
+
+	err = enc.Encode(res)
+	if err != nil {
+		return err
+	}
+
+	c.count = 0
+	return nil
+}
+
+func (c *cache) Reload() {
+	f, err := os.Open(filepath.Join(constant.Path.HomeDir(), "dnscache"))
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	dec := gob.NewDecoder(f)
+	items := make(map[string]string)
+
+	err = dec.Decode(&items)
+	if err != nil {
+		return
+	}
+
+	for k, v := range items {
+		s := strings.Split(v, ",")
+
+		var expireTime = time.Now()
+		if len(s) > 1 {
+			i, err := strconv.ParseInt(s[1], 10, 64)
+			if err != nil {
+				continue
+			}
+			expireTime = time.Unix(i, 0)
+		}
+
+		c.Put(k, s[0], time.Until(expireTime))
+	}
+
+	return
 }
 
 type janitor struct {
