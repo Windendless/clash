@@ -38,12 +38,13 @@ type General struct {
 
 // DNS config
 type DNS struct {
-	Enable       bool             `yaml:"enable"`
-	IPv6         bool             `yaml:"ipv6"`
-	NameServer   []dns.NameServer `yaml:"nameserver"`
-	Fallback     []dns.NameServer `yaml:"fallback"`
-	Listen       string           `yaml:"listen"`
-	EnhancedMode dns.EnhancedMode `yaml:"enhanced-mode"`
+	Enable       bool              `yaml:"enable"`
+	IPv6         bool              `yaml:"ipv6"`
+	NameServer   []dns.NameServer  `yaml:"nameserver"`
+	Fallback     []dns.NameServer  `yaml:"fallback"`
+	Hosts        []dns.HostMapping `yaml:"hosts"`
+	Listen       string            `yaml:"listen"`
+	EnhancedMode dns.EnhancedMode  `yaml:"enhanced-mode"`
 	FakeIPRange  *fakeip.Pool
 }
 
@@ -67,6 +68,7 @@ type rawDNS struct {
 	IPv6         bool             `yaml:"ipv6"`
 	NameServer   []string         `yaml:"nameserver"`
 	Fallback     []string         `yaml:"fallback"`
+	Hosts        []string         `yaml:"hosts"`
 	Listen       string           `yaml:"listen"`
 	EnhancedMode dns.EnhancedMode `yaml:"enhanced-mode"`
 	FakeIPRange  string           `yaml:"fake-ip-range"`
@@ -498,6 +500,53 @@ func parseNameServer(servers []string) ([]dns.NameServer, error) {
 	return nameservers, nil
 }
 
+func parseHosts(hosts []string) ([]dns.HostMapping, error) {
+	var hostmapping []dns.HostMapping
+
+	for idx, line := range hosts {
+		hostMap := trimArr(strings.SplitN(line, "=", 2))
+
+		host := hostMap[0]
+		if !strings.HasSuffix(host, ".") {
+			host += "."
+		}
+
+		if strings.HasPrefix(hostMap[1], "server:") {
+			s := strings.TrimPrefix(hostMap[1], "server:")
+			servers := strings.Split(s, ",")
+
+			nameservers, err := parseNameServer(servers)
+			if err != nil {
+				return nil, err
+			}
+
+			hostmapping = append(
+				hostmapping,
+				dns.HostMapping{
+					Host: host,
+					Net:  "server",
+					Addr: nameservers,
+				},
+			)
+		} else {
+			ip := net.ParseIP(hostMap[1])
+			if ip == nil {
+				return nil, fmt.Errorf("DNS Hosts[%d] format error: %s", idx, hostMap[1])
+			}
+
+			hostmapping = append(
+				hostmapping,
+				dns.HostMapping{
+					Host: host,
+					Net:  "mapping",
+					Addr: ip,
+				},
+			)
+		}
+	}
+	return hostmapping, nil
+}
+
 func parseDNS(cfg rawDNS) (*DNS, error) {
 	if cfg.Enable && len(cfg.NameServer) == 0 {
 		return nil, fmt.Errorf("If DNS configuration is turned on, NameServer cannot be empty")
@@ -516,6 +565,10 @@ func parseDNS(cfg rawDNS) (*DNS, error) {
 
 	if dnsCfg.Fallback, err = parseNameServer(cfg.Fallback); err != nil {
 		return nil, err
+	}
+
+	if hosts, err := parseHosts(cfg.Hosts); err == nil {
+		dnsCfg.Hosts = hosts
 	}
 
 	if cfg.EnhancedMode == dns.FAKEIP {

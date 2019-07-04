@@ -48,6 +48,7 @@ type Resolver struct {
 	fallback []resolver
 	main     []resolver
 	cache    *cache.Cache
+	hosts    *hosts
 }
 
 // ResolveIP request with TypeA and TypeAAAA, priority return TypeAAAA
@@ -114,6 +115,15 @@ func (r *Resolver) Exchange(m *D.Msg) (msg *D.Msg, err error) {
 	}
 
 	q := m.Question[0]
+	ip, resolver := r.hosts.Get(q.Name)
+	if ip != nil {
+		rr := &D.A{}
+		rr.Hdr = D.RR_Header{Name: m.Question[0].Name, Rrtype: D.TypeA, Class: D.ClassINET, Ttl: dnsDefaultTTL}
+		rr.A = ip
+		msg = m.Copy()
+		msg.Answer = []D.RR{rr}
+		return
+	}
 	cache, expireTime := r.cache.GetWithExpire(q.String())
 	if cache != nil {
 		msg = cache.(*D.Msg).Copy()
@@ -133,6 +143,11 @@ func (r *Resolver) Exchange(m *D.Msg) (msg *D.Msg, err error) {
 			}
 		}
 	}()
+
+	if resolver != nil {
+		msg, err = r.batchExchange(resolver, m)
+		return
+	}
 
 	isIPReq := isIPRequest(q)
 	if isIPReq {
@@ -274,6 +289,7 @@ type NameServer struct {
 
 type Config struct {
 	Main, Fallback []NameServer
+	Hosts          []HostMapping
 	IPv6           bool
 	EnhancedMode   EnhancedMode
 	Pool           *fakeip.Pool
@@ -287,6 +303,7 @@ func New(config Config) *Resolver {
 	r := &Resolver{
 		ipv6:    config.IPv6,
 		main:    transform(config.Main),
+		hosts:   NewHosts(config.Hosts),
 		cache:   cache.New(time.Second * 60),
 		mapping: config.EnhancedMode == MAPPING,
 		fakeip:  config.EnhancedMode == FAKEIP,

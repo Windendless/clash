@@ -66,6 +66,7 @@ func updateDNS(c *config.DNS) {
 	r := dns.New(dns.Config{
 		Main:         c.NameServer,
 		Fallback:     c.Fallback,
+		Hosts:        c.Hosts,
 		IPv6:         c.IPv6,
 		EnhancedMode: c.EnhancedMode,
 		Pool:         c.FakeIPRange,
